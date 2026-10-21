@@ -1,6 +1,6 @@
 {
   "name": "decisions-chess-tournament",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "LLM chess benchmark arena: double round-robin OpenRouter tournaments with live boards, Elo ratings, usage accounting, and local Stockfish 19 Lite analysis at depth 15.",
   "type": "module",

@@ -12,6 +12,14 @@ interface RunnerDeps {
   reportError: (message: string) => void;
 }
 
+// chess.js history() and pgn() rewind and replay every prior move, so keeping
+// SAN and PGN incrementally avoids per-move cost that grows with game length.
+/** Appends one SAN move to PGN movetext without replaying the whole game. */
+function appendPgnMove(pgn: string, san: string, ply: number): string {
+  if (ply % 2 === 1) return `${pgn}${Math.ceil(ply / 2)}. ${san} `;
+  return `${pgn}${san} `;
+}
+
 /** Executes a single game with chess.js as the authoritative rules engine. */
 export class GameRunner {
   /** Creates a runner bound to shared providers and reporting callbacks. */
@@ -21,6 +29,8 @@ export class GameRunner {
   async play(game: TournamentGame, signal: AbortSignal): Promise<TournamentGame> {
     const chess = new Chess();
     const moves: MoveRecord[] = [];
+    const sans: string[] = [];
+    let pgn = "";
     let current: TournamentGame = { ...game, status: "playing", moves: [], sans: [], fen: chess.fen(), pgn: "" };
     this.deps.reportGame(current);
 
@@ -31,12 +41,13 @@ export class GameRunner {
       const provider = this.deps.providers.get(modelId);
       if (!provider) throw new Error(`No move provider for ${modelId}.`);
       const legalMoves = chess.moves({ verbose: true }).map((move) => `${move.from}${move.to}${move.promotion ?? ""}`);
+      const fenBefore = chess.fen();
       const result = await provider.requestMove(
         {
           modelId,
           apiKey: this.deps.apiKey,
-          fen: chess.fen(),
-          pgn: chess.pgn(),
+          fen: fenBefore,
+          pgn,
           legalMoves,
           color: turn,
           moveNumber: Math.floor(moves.length / 2) + 1,
@@ -45,14 +56,27 @@ export class GameRunner {
       );
       this.deps.reportUsage({ modelId, ...result.usage });
       if (result.error) this.deps.reportError(`${modelId}: ${result.error}`);
-      const record: MoveRecord = { ply: moves.length + 1, ...result.record };
+      const applied = chess.move({
+        from: result.record.uci.slice(0, 2),
+        to: result.record.uci.slice(2, 4),
+        promotion: result.record.uci.slice(4) || undefined,
+      });
+      const record: MoveRecord = {
+        ...result.record,
+        ply: moves.length + 1,
+        san: applied.san,
+        fenBefore,
+        fenAfter: chess.fen(),
+      };
       moves.push(record);
-      chess.move({ from: record.uci.slice(0, 2), to: record.uci.slice(2, 4), promotion: record.uci.slice(4) || undefined });
-      current = { ...current, moves: [...moves], sans: chess.history(), fen: chess.fen(), pgn: chess.pgn() };
+      sans.push(applied.san);
+      pgn = appendPgnMove(pgn, applied.san, record.ply);
+      current = { ...current, moves: [...moves], sans: [...sans], fen: chess.fen(), pgn };
       this.deps.reportGame(current);
     }
 
-    return { ...current, status: "finished", ...this.describeResult(chess) };
+    // Build the full PGN only once, for completed games and any later export.
+    return { ...current, status: "finished", pgn: chess.pgn(), ...this.describeResult(chess) };
   }
 
   /** Maps the terminal chess.js position to a tournament outcome and reason. */
